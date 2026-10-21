@@ -85,7 +85,7 @@ The engine attributes the plateau to the alternating shot pacing and visual entr
 ### Installation
 
 ```bash
-git clone https://github.com/ricci/retention-analyzer.git
+git clone https://github.com/riccivr/retention-analyzer.git
 cd retention-analyzer
 npm install
 cp .env.example .env

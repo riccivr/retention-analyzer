@@ -26,6 +26,14 @@
   ],
   "author": "riccivr",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/riccivr/retention-analyzer.git"
+  },
+  "homepage": "https://github.com/riccivr/retention-analyzer#readme",
+  "bugs": {
+    "url": "https://github.com/riccivr/retention-analyzer/issues"
+  },
   "dependencies": {
     "@google/genai": "^2.30.0",
     "commander": "^12.1.0",
