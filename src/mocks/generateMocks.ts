@@ -1,0 +1,388 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import {
+  UnifiedVideoMetrics,
+  PacingMetrics,
+  MultimodalSegment,
+} from '../types/schema.js';
+
+export interface MockVideoPackage {
+  metrics: UnifiedVideoMetrics;
+  pacing: PacingMetrics;
+  timeline: MultimodalSegment[];
+}
+
+export interface BrostyComparisonDataset {
+  datasetName: string;
+  description: string;
+  outlierVideo: MockVideoPackage;
+  baselineVideo: MockVideoPackage;
+}
+
+export function generateBrostyComparisonData(): BrostyComparisonDataset {
+  // 1. Outlier Combo Video (Viral - 53,600 views)
+  const outlierMetrics: UnifiedVideoMetrics = {
+    videoId: 'video_outlier_combo',
+    title: 'Brosty Signature Combo Flip & Garlic Truffle Glaze (Viral Showcase)',
+    platform: 'tiktok',
+    durationSec: 28,
+    metrics: {
+      views: 53600,
+      reach: 51200,
+      likes: 4920,
+      comments: 142,
+      shares: 680,
+      saves: 1380,
+      avgWatchTimeSec: 22.4,
+      fullVideoWatchedPct: 48.5,
+      threeSecRetentionPct: 82.0,
+    },
+    retentionCurve: [
+      { second: 0, retentionPct: 100 },
+      { second: 1, retentionPct: 94 },
+      { second: 2, retentionPct: 88 },
+      { second: 3, retentionPct: 82 }, // 82% 3-sec hook retention
+      { second: 4, retentionPct: 81 },
+      { second: 5, retentionPct: 80 },
+      { second: 6, retentionPct: 79 },
+      { second: 7, retentionPct: 79 }, // plateau 0:03-0:09
+      { second: 8, retentionPct: 78 },
+      { second: 9, retentionPct: 78 },
+      { second: 10, retentionPct: 76 },
+      { second: 11, retentionPct: 69 }, // Slight dip (-7%) during static explanation
+      { second: 12, retentionPct: 68 },
+      { second: 13, retentionPct: 68 },
+      { second: 14, retentionPct: 67 },
+      { second: 15, retentionPct: 67 },
+      { second: 16, retentionPct: 66 },
+      { second: 17, retentionPct: 65 },
+      { second: 18, retentionPct: 65 },
+      { second: 19, retentionPct: 64 },
+      { second: 20, retentionPct: 63 },
+      { second: 21, retentionPct: 61 },
+      { second: 22, retentionPct: 60 },
+      { second: 23, retentionPct: 59 },
+      { second: 24, retentionPct: 58 },
+      { second: 25, retentionPct: 57 },
+      { second: 26, retentionPct: 55 },
+      { second: 27, retentionPct: 54 },
+      { second: 28, retentionPct: 53 },
+    ],
+  };
+
+  const outlierCutTimestamps = [
+    0.7, 1.8, 2.9, 4.1, 5.2, 6.4, 7.6, 8.9, 10.1, 12.2, 13.4, 14.7, 15.9,
+    17.1, 18.5, 19.8, 21.0, 22.3, 23.7, 25.1, 26.4, 27.8,
+  ];
+
+  const outlierShotLengths = [
+    0.7, 1.1, 1.1, 1.2, 1.1, 1.2, 1.2, 1.3, 1.2, 2.1, 1.2, 1.3, 1.2, 1.2,
+    1.4, 1.3, 1.2, 1.3, 1.4, 1.4, 1.3, 1.4, 0.2,
+  ];
+
+  const outlierPacing: PacingMetrics = {
+    durationSec: 28,
+    fps: 30,
+    resolution: { width: 1080, height: 1920 },
+    cutTimestamps: outlierCutTimestamps,
+    cutsCount: outlierCutTimestamps.length,
+    cutsPerMinute: Math.round((outlierCutTimestamps.length / 28) * 60 * 10) / 10, // 47.1 CPM
+    averageShotLengthSec: 1.22,
+    longestStaticShotSec: 2.1,
+    timeToFirstCutSec: 0.7,
+    shotLengthsSec: outlierShotLengths,
+  };
+
+  const outlierTimeline: MultimodalSegment[] = [
+    {
+      startTime: 0.0,
+      endTime: 0.7,
+      visualType: 'product_closeup',
+      cameraMovement: 'handheld_dynamic',
+      onScreenText: 'WAIT TILL THE FLIP 💥',
+      spokenTranscript: 'Wait until you hear this crunch.',
+      wpm: 170,
+      vocalEnergy: 'high_hype',
+      hookAnatomy: {
+        visualStimulus: 'Extreme macro zoom on molten cheddar sizzling over smash patty',
+        verbalHookPattern: 'curiosity_gap',
+        description: 'Instant visual sizzle stimulus with immediate curiosity gap in under 0.8s.',
+      },
+      summary: 'High sensory visual hook with rapid motion.',
+    },
+    {
+      startTime: 0.7,
+      endTime: 1.8,
+      visualType: 'b_roll_action',
+      cameraMovement: 'handheld_dynamic',
+      onScreenText: 'DOUBLE BUTTER BRIOCHE',
+      spokenTranscript: 'Freshly toasted brioche bun with smoked garlic.',
+      wpm: 165,
+      vocalEnergy: 'high_hype',
+      summary: 'Fast dynamic cut showing bread crust and steam.',
+    },
+    {
+      startTime: 1.8,
+      endTime: 2.9,
+      visualType: 'product_closeup',
+      cameraMovement: 'zoom_in',
+      onScreenText: 'SECRET TRUFFLE GLAZE 🤤',
+      spokenTranscript: 'Drenched in our signature truffle glaze.',
+      wpm: 155,
+      vocalEnergy: 'high_hype',
+      summary: 'Macro liquid pour creates visual satisfaction and holds 3-sec retention.',
+    },
+    {
+      startTime: 2.9,
+      endTime: 4.1,
+      visualType: 'b_roll_action',
+      cameraMovement: 'handheld_dynamic',
+      onScreenText: 'CRUNCH PATTY STACK',
+      spokenTranscript: 'Stacking two 4oz crispy smash patties.',
+      wpm: 160,
+      vocalEnergy: 'conversational',
+      summary: 'Kinetic food assembly keeping eye glued to screen center.',
+    },
+    {
+      startTime: 4.1,
+      endTime: 6.4,
+      visualType: 'product_closeup',
+      cameraMovement: 'zoom_in',
+      onScreenText: 'PICKLE & CHIP CRACKLE',
+      spokenTranscript: 'House-made pickled jalapenos and waffle crisps.',
+      wpm: 160,
+      vocalEnergy: 'conversational',
+      summary: 'Alternating shot lengths between 1.1s and 1.2s sustain a steady plateau.',
+    },
+    {
+      startTime: 6.4,
+      endTime: 8.9,
+      visualType: 'b_roll_action',
+      cameraMovement: 'handheld_dynamic',
+      onScreenText: 'LOADED CAJUN FRIES 🍟',
+      spokenTranscript: 'And we never skip the double tossed cajun fries.',
+      wpm: 150,
+      vocalEnergy: 'conversational',
+      summary: 'Basket toss action keeps visual momentum at 78% retention.',
+    },
+    {
+      startTime: 8.9,
+      endTime: 10.1,
+      visualType: 'product_closeup',
+      cameraMovement: 'zoom_in',
+      onScreenText: 'THE CHEESE DRIP',
+      spokenTranscript: 'Watch that cheese stretch right here.',
+      wpm: 155,
+      vocalEnergy: 'high_hype',
+      summary: 'Extreme close up cheese pull.',
+    },
+    {
+      startTime: 10.1,
+      endTime: 12.2,
+      visualType: 'talking_head',
+      cameraMovement: 'static',
+      onScreenText: 'Our secret blend took 3 months...',
+      spokenTranscript: 'We spent three months formulating this proprietary rub in our kitchen.',
+      wpm: 110,
+      vocalEnergy: 'conversational',
+      summary: 'Slight talking head static shot causes temporary 7% dip at 0:11.',
+    },
+    {
+      startTime: 12.2,
+      endTime: 15.9,
+      visualType: 'b_roll_action',
+      cameraMovement: 'handheld_dynamic',
+      onScreenText: 'THE CROSS SECTION 🔪',
+      spokenTranscript: 'Slice it open. That cross section is pure perfection.',
+      wpm: 165,
+      vocalEnergy: 'high_hype',
+      summary: 'Rapid visual re-engagement immediately stops the dip.',
+    },
+    {
+      startTime: 15.9,
+      endTime: 21.0,
+      visualType: 'product_closeup',
+      cameraMovement: 'handheld_dynamic',
+      onScreenText: 'COMBO MEAL OF THE WEEK',
+      spokenTranscript: 'Grab the whole combo with house sauce and loaded fries all weekend.',
+      wpm: 160,
+      vocalEnergy: 'conversational',
+      summary: 'Macro panning over completed tray maintains high watch time.',
+    },
+    {
+      startTime: 21.0,
+      endTime: 28.0,
+      visualType: 'b_roll_action',
+      cameraMovement: 'handheld_dynamic',
+      onScreenText: 'TAG SOMEONE WHO OWES YOU THIS 🍔',
+      spokenTranscript: 'Tag your burger partner and tell them they owe you lunch today.',
+      wpm: 170,
+      vocalEnergy: 'high_hype',
+      summary: 'Action-oriented call-to-action driving viral share/save ratio.',
+    },
+  ];
+
+  // 2. Baseline Promo Video (Underperforming - 1,450 views)
+  const baselineMetrics: UnifiedVideoMetrics = {
+    videoId: 'video_baseline_promo',
+    title: 'Brosty Mid-Week Promo Announcement (Underperforming Baseline)',
+    platform: 'tiktok',
+    durationSec: 30,
+    metrics: {
+      views: 1450,
+      reach: 1420,
+      likes: 48,
+      comments: 3,
+      shares: 2,
+      saves: 4,
+      avgWatchTimeSec: 6.1,
+      fullVideoWatchedPct: 4.2,
+      threeSecRetentionPct: 41.0,
+    },
+    retentionCurve: [
+      { second: 0, retentionPct: 100 },
+      { second: 1, retentionPct: 76 },
+      { second: 2, retentionPct: 58 },
+      { second: 3, retentionPct: 41 }, // Sharp drop: 41% at 3s
+      { second: 4, retentionPct: 31 }, // -10% drop in 1s!
+      { second: 5, retentionPct: 24 }, // -7% drop in 1s!
+      { second: 6, retentionPct: 20 }, // -4% drop in 1s! (Total loss 0:02-0:06: -38%)
+      { second: 7, retentionPct: 18 },
+      { second: 8, retentionPct: 17 },
+      { second: 9, retentionPct: 16 },
+      { second: 10, retentionPct: 15 },
+      { second: 12, retentionPct: 13 },
+      { second: 15, retentionPct: 11 },
+      { second: 18, retentionPct: 9 },
+      { second: 20, retentionPct: 8 },
+      { second: 22, retentionPct: 7 },
+      { second: 25, retentionPct: 6 },
+      { second: 28, retentionPct: 5 },
+      { second: 30, retentionPct: 4 },
+    ],
+  };
+
+  const baselineCutTimestamps = [4.2, 9.8, 14.5, 22.0, 26.5];
+  const baselineShotLengths = [4.2, 5.6, 4.7, 7.5, 4.5, 3.5];
+
+  const baselinePacing: PacingMetrics = {
+    durationSec: 30,
+    fps: 30,
+    resolution: { width: 1080, height: 1920 },
+    cutTimestamps: baselineCutTimestamps,
+    cutsCount: baselineCutTimestamps.length,
+    cutsPerMinute: Math.round((baselineCutTimestamps.length / 30) * 60 * 10) / 10, // 10.0 CPM
+    averageShotLengthSec: 4.28,
+    longestStaticShotSec: 7.5,
+    timeToFirstCutSec: 4.2,
+    shotLengthsSec: baselineShotLengths,
+  };
+
+  const baselineTimeline: MultimodalSegment[] = [
+    {
+      startTime: 0.0,
+      endTime: 4.2,
+      visualType: 'talking_head',
+      cameraMovement: 'static',
+      onScreenText: 'WEEKLY SPECIALS AT BROSTY',
+      spokenTranscript: 'Hey what is up guys, welcome back to Brosty. Today we wanted to announce...',
+      wpm: 105,
+      vocalEnergy: 'low',
+      hookAnatomy: {
+        visualStimulus: 'Stationary host standing behind front counter holding paper flyer',
+        verbalHookPattern: 'direct_statement',
+        description: 'Generic greeting with direct commercial pitch. No movement or sensory intrigue.',
+      },
+      summary: 'Zero visual cut for 4.2 seconds; massive viewer abandonment during hook.',
+    },
+    {
+      startTime: 4.2,
+      endTime: 9.8,
+      visualType: 'talking_head',
+      cameraMovement: 'static',
+      onScreenText: '15% OFF COMBOS THIS WEDNESDAY',
+      spokenTranscript: '...our special mid-week promotional discount that starts this Wednesday for everyone who comes in...',
+      wpm: 112,
+      vocalEnergy: 'conversational',
+      summary: 'Continued talking head pointing at paper flyer. Retention collapses down to 16%.',
+    },
+    {
+      startTime: 9.8,
+      endTime: 14.5,
+      visualType: 'b_roll_action',
+      cameraMovement: 'static',
+      onScreenText: 'Visit our downtown location',
+      spokenTranscript: 'So come on down to our downtown location and show this video to the cashier at the counter...',
+      wpm: 108,
+      vocalEnergy: 'low',
+      summary: 'Static wide shot of empty dining room tables. No food or appetizing stimulus.',
+    },
+    {
+      startTime: 14.5,
+      endTime: 22.0,
+      visualType: 'product_closeup',
+      cameraMovement: 'pan',
+      onScreenText: 'Takeout boxes available',
+      spokenTranscript: 'You can also order takeout through our online portal if you do not want to wait in line during lunch rush...',
+      wpm: 98,
+      vocalEnergy: 'low',
+      summary: 'Longest static shot (7.5s) slowly panning over closed cardboard boxes.',
+    },
+    {
+      startTime: 22.0,
+      endTime: 26.5,
+      visualType: 'talking_head',
+      cameraMovement: 'static',
+      onScreenText: 'Follow for more updates',
+      spokenTranscript: 'Make sure to follow our page for more weekly deals and food updates...',
+      wpm: 105,
+      vocalEnergy: 'low',
+      summary: 'Generic ask for followers without payoff.',
+    },
+    {
+      startTime: 26.5,
+      endTime: 30.0,
+      visualType: 'text_graphic',
+      cameraMovement: 'static',
+      onScreenText: 'BROSTY BURGERS - DOWNTOWN',
+      spokenTranscript: '...thanks for watching guys and see you soon.',
+      wpm: 85,
+      vocalEnergy: 'low',
+      summary: 'Static end card with logo.',
+    },
+  ];
+
+  return {
+    datasetName: 'brosty_burger_ab_comparison',
+    description: 'Realistic A/B dataset comparing an organic combo showcase outlier against a promotional talking head baseline.',
+    outlierVideo: {
+      metrics: outlierMetrics,
+      pacing: outlierPacing,
+      timeline: outlierTimeline,
+    },
+    baselineVideo: {
+      metrics: baselineMetrics,
+      pacing: baselinePacing,
+      timeline: baselineTimeline,
+    },
+  };
+}
+
+export function writeBrostyMockFile(targetPath?: string): string {
+  const data = generateBrostyComparisonData();
+  const filePath = targetPath || path.resolve(process.cwd(), 'mocks', 'brosty_comparison.json');
+  const dir = path.dirname(filePath);
+
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+
+  fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8');
+  return filePath;
+}
+
+// Allow direct execution via tsx
+if (process.argv[1] && process.argv[1].includes('generateMocks')) {
+  const written = writeBrostyMockFile();
+  console.log(`[generateMocks] Successfully generated mock dataset at: ${written}`);
+}

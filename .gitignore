@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.env
+.env.local
+*.log
+npm-debug.log*
+reports/*.pdf
+tmp/
+.DS_Store
+Thumbs.db
