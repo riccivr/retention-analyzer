@@ -1,11 +1,13 @@
 # Short-Form Video Retention & Editing Analyzer (A/B Outlier Engine)
 
 > Mathematically and visually correlate second-by-second retention drop-offs, watch times, and virality against deterministic video editing mechanics (cut frequency, visual pacing, B-roll timing, hook patterns, and spoken scripts) across TikTok and Instagram Reels.
+> **100% Local Tier-3 WSL2 Stack: Ollama (`gemma4:12b` / `qwen3.5:27b`) + Whisper (`large-v3`) + High-Res FFmpeg Contact Sheets.**
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.6-blue.svg)](https://www.typescriptlang.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-24%2B-green.svg)](https://nodejs.org/)
 [![FFmpeg](https://img.shields.io/badge/FFmpeg-8.0-orange.svg)](https://ffmpeg.org/)
-[![Gemini](https://img.shields.io/badge/Gemini-3.8--flash-purple.svg)](https://ai.google.dev/)
+[![Ollama](https://img.shields.io/badge/Ollama-Local_Tier--3-white.svg)](https://ollama.com/)
+[![Whisper](https://img.shields.io/badge/Whisper-Large--v3-green.svg)](https://github.com/SYSTRAN/faster-whisper)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ---
@@ -14,11 +16,12 @@
 
 Why does an organic food combo showcase generate **53,600 views** with an 82% 3-second hook retention, while a seemingly similar promotional announcement stalls at **1,450 views** with a 41% hook retention?
 
-The **A/B Outlier Engine** solves this question deterministically:
-1. **Deterministic Pacing (FFmpeg):** Extracts frame-accurate hard cuts (`select='gt(scene,0.3)'`), Cuts Per Minute (CPM), Average Shot Length (ASL), and time-to-first-cut without LLM hallucination.
-2. **Multimodal Deconstruction (Gemini 3.8 Flash):** Analyzes video + audio + screen text in chronological 1-to-3s windows to classify visual shot types, camera dynamics, on-screen text, spoken dialogue, and hook anatomy.
-3. **Correlation Engine:** Pinpoints every retention drop $\ge 4\%$ in a single second and correlates it with the exact editorial state at $[t-1\text{s}, t+1\text{s}]$, identifying algorithmic dead zones and retention plateaus.
-4. **Replication Blueprint:** Synthesizes actionable, quantitative rules for video editors to apply to the next edit.
+The **A/B Outlier Engine** runs **100% locally inside WSL2** on Tier-3 hardware (16GB+ VRAM / 32GB+ RAM) with zero cloud API dependencies:
+1. **Deterministic Pacing (FFmpeg):** Extracts frame-accurate hard cuts (`select='gt(scene,0.3)'`), Cuts Per Minute (CPM), Average Shot Length (ASL), and time-to-first-cut.
+2. **High-Res Contact Sheet Generator (FFmpeg):** Generates composite timestamped $4\times 4$ keyframe grids ($T=0:00, 0:02, \dots$) for efficient local vision model inspection.
+3. **Local Audio Transcription (Whisper `large-v3` / `faster-whisper`):** Transcribes audio tracks with word-level timestamps, speech density, and words-per-minute (WPM) calculations.
+4. **Local Multimodal Deconstruction (Ollama `gemma4:12b` / `qwen3.5:27b`):** Analyzes the contact sheet + transcript in 1-to-3s segments to classify visual shot types, camera dynamics, on-screen text, and hook anatomy.
+5. **Correlation Engine:** Correlates every retention drop $\ge 4\%$ at $[t-1\text{s}, t+1\text{s}]$, identifies plateaus, and synthesizes a concrete 3-rule Replication Blueprint for video editors.
 
 ---
 
@@ -28,23 +31,27 @@ The **A/B Outlier Engine** solves this question deterministically:
 retention-analyzer/
 ├── src/
 │   ├── types/
-│   │   └── schema.ts           # Unified Zod schemas for metrics, pacing, multimodal timeline & reports
+│   │   └── schema.ts            # Unified Zod schemas for metrics, pacing, timeline & reports
 │   ├── ingest/
-│   │   ├── normalizer.ts       # TikTok & Meta Business Suite metric normalizer & CSV parser
-│   │   └── visionGraphParser.ts# Gemini Multimodal Vision parser for retention graph screenshots
+│   │   ├── normalizer.ts        # TikTok & Meta Business Suite metric normalizer & CSV parser
+│   │   └── visionGraphParser.ts # Local Ollama Vision parser for retention graph screenshots
 │   ├── video/
-│   │   └── ffmpegPacing.ts     # Deterministic FFmpeg scene-cut detection, CPM & ASL engine
+│   │   ├── ffmpegPacing.ts      # Deterministic FFmpeg scene-cut detection, CPM & ASL engine
+│   │   └── contactSheet.ts      # High-res timestamped contact sheet grid generator (FFmpeg)
+│   ├── audio/
+│   │   ├── transcriber.ts       # Local Whisper large-v3 video audio transcription wrapper
+│   │   └── transcribe_helper.py # Python faster-whisper runner with word-level timestamps
 │   ├── analyzer/
-│   │   └── multimodalAnalyzer.ts # Gemini File API structured video deconstructor
+│   │   └── multimodalAnalyzer.ts# Local Tier-3 multimodal deconstructor (Ollama + Whisper + Contact Sheets)
 │   ├── correlator/
-│   │   └── engine.ts           # Drop-off attribution, plateau detector & A/B diff engine
+│   │   └── engine.ts            # Drop-off attribution, plateau detector & A/B diff engine
 │   ├── mocks/
-│   │   └── generateMocks.ts    # Synthetic generator for Brosty A/B benchmark dataset
-│   └── index.ts                # CLI runner and entry point
+│   │   └── generateMocks.ts     # Synthetic generator for Brosty A/B benchmark dataset
+│   └── index.ts                 # CLI runner and entry point
 ├── mocks/
-│   └── brosty_comparison.json  # Complete realistic A/B dataset (53.6k viral vs 1.4k baseline)
+│   └── brosty_comparison.json   # Complete realistic A/B dataset (53.6k viral vs 1.4k baseline)
 ├── reports/
-│   └── ab_comparison_report.md # Generated publication-ready Markdown diagnostic report
+│   └── ab_comparison_report.md  # Generated publication-ready Markdown diagnostic report
 ├── package.json
 ├── tsconfig.json
 └── .env.example
@@ -71,58 +78,78 @@ If $\Delta R_t \ge 4.0\%$:
 ### Retention Plateau
 Contiguous windows $[t_{\text{start}}, t_{\text{end}}]$ where:
 $$(R_{t_{\text{start}}} - R_{t_{\text{end}}}) \le 1.5\% \quad \text{and} \quad (t_{\text{end}} - t_{\text{start}}) \ge 3.0\text{s}$$
-The engine attributes the plateau to the alternating shot pacing and visual entropy sustaining viewer focus.
 
 ---
 
-## 4. Quickstart
+## 4. Configuration (`.env`)
+
+Tier-3 local defaults are configured in `.env`:
+
+```env
+# Local Ollama Host & Tier-3 Models
+OLLAMA_HOST=http://127.0.0.1:11434
+
+# Tier 3 Vision Model (gemma4:12b for fast native vision, or qwen3.5:27b for max precision)
+# Fallback support: qwen-vision-investigator:latest, huihui_ai/qwen2.5-vl-abliterated:7b
+OLLAMA_VISION_MODEL=gemma4:12b
+
+# Tier 3 Deep Reasoning & A/B Correlator Model
+OLLAMA_REASONING_MODEL=qwen3.5:27b
+
+# Local Whisper Large-v3 configuration
+WHISPER_BIN=faster-whisper
+WHISPER_MODEL=large-v3
+WHISPER_LANG=es
+
+# Optional: Path to python binary with faster-whisper installed
+PYTHON_BIN=/mnt/c/Users/ricci/Desktop/code/autodub/.venv/bin/python
+
+# Pacing & Attribution Defaults
+FFMPEG_PATH=ffmpeg
+FFPROBE_PATH=ffprobe
+DROPOFF_THRESHOLD_PCT=4.0
+```
+
+---
+
+## 5. Quickstart & CLI Commands
 
 ### Prerequisites
 - **Node.js** v20+ (Node v24 LTS recommended)
-- **FFmpeg & FFprobe** installed and available in PATH (e.g. `sudo apt install ffmpeg` in WSL/Ubuntu)
-- (Optional) **Google Gemini API Key** for real video and screenshot analysis
-
-### Installation
-
-```bash
-git clone https://github.com/riccivr/retention-analyzer.git
-cd retention-analyzer
-npm install
-cp .env.example .env
-```
+- **FFmpeg & FFprobe** in PATH (`sudo apt install ffmpeg`)
+- **Ollama** running locally in WSL2 (`ollama serve`)
+- Python 3.10+ with `faster-whisper` installed
 
 ### Run Dry-Run Benchmark
-
-Run the full end-to-end A/B correlation on the synthetic Brosty dataset:
 
 ```bash
 npm run dryrun
 ```
 
-This immediately parses the data, runs drop-off attribution, computes CPM and ASL, and writes a detailed markdown report to `reports/ab_comparison_report.md`.
+Outputs the complete A/B comparative report to `reports/ab_comparison_report.md`.
 
----
-
-## 5. CLI Usage & Commands
+### CLI Utilities
 
 ```bash
-# Run the synthetic A/B comparison dry-run
-npx tsx src/index.ts --dry-run
-
-# Run deterministic FFmpeg cut detection and pacing analysis on any .mp4 file
+# 1. Deterministic FFmpeg scene-cut and pacing detection
 npx tsx src/index.ts --extract-pacing ./path/to/video.mp4
 
-# Extract second-by-second retention curve from a screenshot using Gemini Vision
-npx tsx src/index.ts --parse-graph ./path/to/retention_screenshot.png
+# 2. High-res timestamped contact sheet grid generation
+npx tsx src/index.ts --contact-sheet ./path/to/video.mp4
 
-# Compare two real video files with automated multimodal deconstruction
+# 3. Audio transcription with local Whisper Large-v3
+npx tsx src/index.ts --transcribe ./path/to/video.mp4 --whisper-lang es
+
+# 4. Retention graph screenshot extraction with local Ollama Vision
+npx tsx src/index.ts --parse-graph ./path/to/retention_graph.png
+
+# 5. Full local A/B real-video comparison
 npx tsx src/index.ts \
-  --video-a ./path/to/outlier.mp4 \
-  --video-b ./path/to/baseline.mp4 \
-  --output ./reports/custom_ab_report.md
-
-# Regenerate synthetic mock test cases
-npm run mocks
+  --video-a ./outlier.mp4 \
+  --video-b ./baseline.mp4 \
+  --vision-model gemma4:12b \
+  --reasoning-model qwen3.5:27b \
+  --output ./reports/custom_report.md
 ```
 
 ---
@@ -149,4 +176,4 @@ npm run mocks
 
 ## 7. License
 
-MIT License. Crafted for high-growth short-form video editors and algorithmic content strategists.
+MIT License. Copyright (c) 2026 riccivr.

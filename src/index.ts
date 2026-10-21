@@ -10,13 +10,15 @@ import {
   BrostyComparisonDataset,
 } from './mocks/generateMocks.js';
 import { extractVideoPacing } from './video/ffmpegPacing.js';
+import { generateVideoContactSheet } from './video/contactSheet.js';
+import { transcribeVideo } from './audio/transcriber.js';
 import { deconstructVideoMultimodal } from './analyzer/multimodalAnalyzer.js';
 import {
   deconstructVideoModel,
   compareVideosAB,
 } from './correlator/engine.js';
 import { parseRetentionGraphScreenshot } from './ingest/visionGraphParser.js';
-import { normalizeTikTokMetrics, normalizeInstagramMetrics } from './ingest/normalizer.js';
+import { normalizeTikTokMetrics } from './ingest/normalizer.js';
 
 dotenv.config();
 
@@ -25,16 +27,23 @@ const program = new Command();
 program
   .name('retention-analyzer')
   .description(
-    'Short-Form Video Retention & Editing Analyzer (A/B Outlier Engine) for TikTok and Instagram Reels'
+    'Short-Form Video Retention & Editing Analyzer (A/B Outlier Engine) - Tier-3 Local WSL2 Stack (Ollama + Whisper Large-v3 + FFmpeg Contact Sheets)'
   )
-  .version('1.0.0');
+  .version('1.1.0');
 
 program
   .option('-d, --dry-run', 'Run full dry-run correlation on synthetic Brosty A/B dataset')
   .option('-o, --output <path>', 'Save generated Markdown report to specified path', 'reports/ab_comparison_report.md')
   .option('-p, --extract-pacing <videoPath>', 'Run deterministic FFmpeg cut detection and pacing extraction')
-  .option('-g, --parse-graph <imagePath>', 'Run Gemini Vision parser on a retention graph screenshot')
+  .option('-c, --contact-sheet <videoPath>', 'Generate high-res timestamped contact sheet grid (FFmpeg)')
+  .option('-t, --transcribe <videoPath>', 'Transcribe video audio using local Whisper (large-v3 / faster-whisper)')
+  .option('-g, --parse-graph <imagePath>', 'Run local Ollama Vision parser on a retention graph screenshot')
   .option('-m, --generate-mocks', 'Generate synthetic mock data at mocks/brosty_comparison.json')
+  .option('--ollama-host <url>', 'Ollama host endpoint', process.env.OLLAMA_HOST || 'http://127.0.0.1:11434')
+  .option('--vision-model <model>', 'Local vision model', process.env.OLLAMA_VISION_MODEL || 'gemma4:12b')
+  .option('--reasoning-model <model>', 'Local reasoning model', process.env.OLLAMA_REASONING_MODEL || 'qwen3.5:27b')
+  .option('--whisper-model <model>', 'Whisper model', process.env.WHISPER_MODEL || 'large-v3')
+  .option('--whisper-lang <lang>', 'Whisper language', process.env.WHISPER_LANG || 'es')
   .option('--video-a <path>', 'Path to Outlier video .mp4 file')
   .option('--video-b <path>', 'Path to Baseline video .mp4 file')
   .option('--metrics-a <path>', 'Path to JSON/CSV metrics for Outlier video')
@@ -54,9 +63,29 @@ program
         return;
       }
 
+      if (options.contactSheet) {
+        console.log(`[FFmpeg] Generating contact sheet for: ${options.contactSheet}...`);
+        const sheet = await generateVideoContactSheet(options.contactSheet);
+        console.log(`[Success] Contact sheet generated at: ${sheet.sheetPath} (${sheet.totalTiles} tiles)`);
+        return;
+      }
+
+      if (options.transcribe) {
+        console.log(`[Whisper] Transcribing audio with local Whisper (${options.whisperModel}, lang: ${options.whisperLang})...`);
+        const transcript = await transcribeVideo(options.transcribe, {
+          model: options.whisperModel,
+          lang: options.whisperLang,
+        });
+        console.log(JSON.stringify(transcript, null, 2));
+        return;
+      }
+
       if (options.parseGraph) {
-        console.log(`[Gemini Vision] Extracting retention curve from: ${options.parseGraph}...`);
-        const points = await parseRetentionGraphScreenshot(options.parseGraph);
+        console.log(`[Local Vision] Extracting retention curve with Ollama (${options.visionModel}) from: ${options.parseGraph}...`);
+        const points = await parseRetentionGraphScreenshot(options.parseGraph, {
+          host: options.ollamaHost,
+          model: options.visionModel,
+        });
         console.log(JSON.stringify(points, null, 2));
         return;
       }
@@ -78,6 +107,7 @@ program
 async function runDryRunComparison(outputPath: string) {
   console.log('='.repeat(70));
   console.log(' SHORT-FORM VIDEO RETENTION & EDITING ANALYZER (A/B OUTLIER ENGINE)');
+  console.log(' Tier-3 Local WSL2 Stack: Ollama (gemma4/qwen) + Whisper large-v3 + FFmpeg');
   console.log('='.repeat(70));
   console.log('Mode: Synthetic A/B Outlier Benchmark Dry-Run');
 
@@ -120,13 +150,12 @@ async function runDryRunComparison(outputPath: string) {
   fs.writeFileSync(resolvedOutputPath, report.summaryMarkdown, 'utf-8');
   console.log(`[4/4] Report written successfully to: ${resolvedOutputPath}\n`);
 
-  // Print executive summary to stdout
   printConsoleSummary(report);
 }
 
 async function runRealVideoComparison(options: any) {
   console.log('='.repeat(70));
-  console.log(' A/B Real Video Multimodal & Deterministic Pacing Comparison');
+  console.log(' Tier-3 Local WSL2 Stack: Real Video Multimodal & Deterministic A/B Comparison');
   console.log('='.repeat(70));
 
   console.log(`[1/6] Deterministic FFmpeg pacing analysis for Video A: ${options.videoA}...`);
@@ -135,13 +164,28 @@ async function runRealVideoComparison(options: any) {
   console.log(`[2/6] Deterministic FFmpeg pacing analysis for Video B: ${options.videoB}...`);
   const pacingB = await extractVideoPacing(options.videoB);
 
-  console.log('[3/6] Multimodal content deconstruction for Video A...');
-  const timelineA = await deconstructVideoMultimodal(options.videoA, pacingA);
+  console.log('[3/6] Local Multimodal deconstruction (Whisper + Contact Sheet + Ollama) for Video A...');
+  const timelineA = await deconstructVideoMultimodal(options.videoA, pacingA, {
+    host: options.ollamaHost,
+    visionModel: options.visionModel,
+    reasoningModel: options.reasoningModel,
+    whisper: {
+      model: options.whisperModel,
+      lang: options.whisperLang,
+    },
+  });
 
-  console.log('[4/6] Multimodal content deconstruction for Video B...');
-  const timelineB = await deconstructVideoMultimodal(options.videoB, pacingB);
+  console.log('[4/6] Local Multimodal deconstruction (Whisper + Contact Sheet + Ollama) for Video B...');
+  const timelineB = await deconstructVideoMultimodal(options.videoB, pacingB, {
+    host: options.ollamaHost,
+    visionModel: options.visionModel,
+    reasoningModel: options.reasoningModel,
+    whisper: {
+      model: options.whisperModel,
+      lang: options.whisperLang,
+    },
+  });
 
-  // Load metrics or create fallback
   let metricsA = options.metricsA
     ? JSON.parse(fs.readFileSync(options.metricsA, 'utf-8'))
     : normalizeTikTokMetrics({

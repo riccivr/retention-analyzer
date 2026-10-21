@@ -1,193 +1,199 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { GoogleGenAI, Type, createPartFromUri, createUserContent } from '@google/genai';
+import { Ollama } from 'ollama';
+import { zodToJsonSchema } from 'zod-to-json-schema';
 import {
   MultimodalSegment,
   MultimodalSegmentSchema,
   PacingMetrics,
 } from '../types/schema.js';
 import { z } from 'zod';
+import { generateVideoContactSheet } from '../video/contactSheet.js';
+import { transcribeVideo, WhisperOptions, WhisperTranscriptionResult } from '../audio/transcriber.js';
+import { resolveLocalVisionModel } from '../ingest/visionGraphParser.js';
 
-export interface MultimodalAnalyzerOptions {
-  apiKey?: string;
-  model?: string;
+export interface LocalMultimodalAnalyzerOptions {
+  host?: string;
+  visionModel?: string;    // e.g. gemma4:12b or qwen3.5:27b
+  reasoningModel?: string; // e.g. qwen3.5:27b
+  whisper?: WhisperOptions;
   fallbackToMock?: boolean;
 }
 
 /**
- * Analyzes video with Gemini Multimodal to extract a detailed visual, vocal,
- * and typographic timeline broken down into 1-to-3 second segments.
+ * Deconstructs video using 100% local Tier-3 WSL2 stack:
+ * 1. FFmpeg Deterministic Cut & Pacing Timestamps
+ * 2. High-Res FFmpeg Contact Sheet Grid Generation
+ * 3. Local Whisper Large-v3 Audio Transcription
+ * 4. Local Ollama Vision + Reasoning (gemma4:12b / qwen3.5:27b)
  */
 export async function deconstructVideoMultimodal(
   videoPath: string,
   pacing: PacingMetrics,
-  options: MultimodalAnalyzerOptions = {}
+  options: LocalMultimodalAnalyzerOptions = {}
 ): Promise<MultimodalSegment[]> {
-  const apiKey = options.apiKey || process.env.GEMINI_API_KEY;
-  const modelName = options.model || process.env.GEMINI_MODEL || 'gemini-3.8-flash';
+  const host = options.host || process.env.OLLAMA_HOST || 'http://127.0.0.1:11434';
+  const preferredVisionModel = options.visionModel || process.env.OLLAMA_VISION_MODEL || 'gemma4:12b';
 
   if (!fs.existsSync(videoPath)) {
     throw new Error(`Video file not found at: ${videoPath}`);
   }
 
-  if (!apiKey) {
-    if (options.fallbackToMock ?? true) {
-      console.warn(
-        `[MultimodalAnalyzer] GEMINI_API_KEY is not set. Generating synthetic deconstructed timeline for ${path.basename(
-          videoPath
-        )} based on FFmpeg pacing.`
-      );
-      return generateSyntheticTimeline(pacing, videoPath);
-    }
-    throw new Error('GEMINI_API_KEY is required for Multimodal Video Analysis.');
+  const client = new Ollama({ host });
+  const visionModel = await resolveLocalVisionModel(client, preferredVisionModel);
+
+  console.log(`[MultimodalAnalyzer] Running 100% Local Tier-3 Deconstruction for: ${path.basename(videoPath)}`);
+
+  // Step 1: Transcribe audio track with local Whisper
+  console.log(`[MultimodalAnalyzer] Extracting and transcribing audio with local Whisper...`);
+  let whisperResult: WhisperTranscriptionResult;
+  try {
+    whisperResult = await transcribeVideo(videoPath, options.whisper);
+    console.log(
+      `[MultimodalAnalyzer] Whisper transcribed ${whisperResult.totalWords} words across ${whisperResult.segments.length} speech segments (detected: ${whisperResult.language}).`
+    );
+  } catch (err: any) {
+    console.warn(`[MultimodalAnalyzer] Whisper transcription warning: ${err.message}. Proceeding with visual pipeline.`);
+    whisperResult = {
+      audioPath: '',
+      language: 'es',
+      languageProbability: 0,
+      duration: pacing.durationSec,
+      totalWords: 0,
+      segments: [],
+    };
   }
 
-  const ai = new GoogleGenAI({ apiKey });
-  let uploadedFile: any = null;
+  // Step 2: Generate High-Res Contact Sheet Grid via FFmpeg
+  console.log(`[MultimodalAnalyzer] Generating high-res contact sheet grid via FFmpeg...`);
+  let contactSheetBase64 = '';
+  try {
+    const sheetResult = await generateVideoContactSheet(videoPath, pacing.durationSec, {
+      columns: 4,
+      rows: 4,
+    });
+    contactSheetBase64 = sheetResult.base64;
+    console.log(
+      `[MultimodalAnalyzer] Generated contact sheet with ${sheetResult.totalTiles} keyframe tiles (interval: ${sheetResult.sampleIntervalSec}s).`
+    );
+  } catch (err: any) {
+    console.warn(`[MultimodalAnalyzer] Contact sheet generation warning: ${err.message}`);
+  }
+
+  // Step 3: Run Ollama Vision with Contact Sheet + Transcripts + Cut Timestamps
+  const segmentsSchema = z.array(MultimodalSegmentSchema);
+  const jsonSchema = zodToJsonSchema(segmentsSchema, 'TimelineSegments');
+
+  const cutList = pacing.cutTimestamps.map((c) => `${c.toFixed(2)}s`).join(', ');
+  const whisperSummary =
+    whisperResult.segments.length > 0
+      ? whisperResult.segments
+          .map((s) => `[${s.start.toFixed(1)}s - ${s.end.toFixed(1)}s] "${s.text}" (${s.wpm} WPM)`)
+          .join('\n')
+      : 'No speech dialogue detected (instrumental or silent).';
+
+  const prompt = `You are a video editor and short-form retention analyst running locally in WSL2.
+Deconstruct this vertical short-form video (Duration: ${pacing.durationSec}s).
+
+DETERMINISTIC FFmpeg CUT TIMESTAMPS: [${cutList || 'none'}]
+LOCAL WHISPER AUDIO TRANSCRIPTION:
+${whisperSummary}
+
+Attached is the high-res 4x4 contact sheet containing timestamped keyframes (T=0:00 to T=${pacing.durationSec}s).
+Break down the video into chronological 1-to-3 second segments (aligning closely with the FFmpeg cut timestamps).
+
+For EVERY segment, output:
+1. startTime and endTime (in seconds)
+2. visualType: strictly one of ["talking_head", "product_closeup", "b_roll_action", "text_graphic"]
+3. cameraMovement: strictly one of ["static", "zoom_in", "pan", "handheld_dynamic"]
+4. onScreenText: exact visual text or captions visible on screen
+5. spokenTranscript: exact words spoken in this window (aligned with Whisper)
+6. wpm: estimated words per minute
+7. vocalEnergy: strictly one of ["low", "conversational", "high_hype"]
+8. hookAnatomy (for 0:00 to 0:03):
+   - visualStimulus: description of the opening visual motion
+   - verbalHookPattern: strictly one of ["curiosity_gap", "direct_statement", "pattern_interrupt", "question", "urgency_fomo", "relatable_struggle"]
+   - description: why the hook succeeded or failed.
+9. summary: brief 1-sentence note.
+
+Cover the entire video from 0.0s to ${pacing.durationSec}s without gaps. Return strictly valid JSON array.`;
 
   try {
-    console.log(`[MultimodalAnalyzer] Uploading video to Gemini File API: ${videoPath}...`);
-    uploadedFile = await ai.files.upload({
-      file: videoPath,
-      config: {
-        mimeType: 'video/mp4',
-        displayName: path.basename(videoPath),
+    console.log(`[MultimodalAnalyzer] Querying local Ollama model (${visionModel})...`);
+
+    const messages = [
+      {
+        role: 'user',
+        content: prompt,
+        images: contactSheetBase64 ? [contactSheetBase64] : undefined,
       },
-    });
+    ];
 
-    // Wait for processing to complete
-    let fileState = uploadedFile.state;
-    let attempts = 0;
-    while (fileState === 'PROCESSING' && attempts < 30) {
-      console.log(`[MultimodalAnalyzer] Processing video... (poll ${attempts + 1})`);
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-      const current = await ai.files.get({ name: uploadedFile.name });
-      fileState = current.state;
-      attempts++;
+    let responseText = '';
+    try {
+      const res = await client.chat({
+        model: visionModel,
+        messages,
+        format: (jsonSchema as any).definitions?.TimelineSegments || 'json',
+        stream: false,
+      });
+      responseText = res.message.content;
+    } catch {
+      // Fallback to format: 'json'
+      const res = await client.chat({
+        model: visionModel,
+        messages,
+        format: 'json',
+        stream: false,
+      });
+      responseText = res.message.content;
     }
 
-    if (fileState === 'FAILED') {
-      throw new Error(`Gemini video processing failed for: ${videoPath}`);
+    if (!responseText) {
+      throw new Error('Empty response from local Ollama model.');
     }
 
-    const cutList = pacing.cutTimestamps.map((c) => `${c.toFixed(2)}s`).join(', ');
+    const cleaned = responseText.replace(/```json/g, '').replace(/```/g, '').trim();
+    const parsed = JSON.parse(cleaned);
+    const dataArray = Array.isArray(parsed) ? parsed : parsed.timeline || parsed.segments || [];
 
-    const promptText = `You are a world-class viral video editor and algorithmic retention specialist.
-Deconstruct this vertical short-form video (duration: ${pacing.durationSec}s).
-FFmpeg detected frame-accurate scene cuts at timestamps: [${cutList || 'none'}].
+    const validated = segmentsSchema.parse(dataArray);
 
-Break down the video into chronological 1-to-3 second segments (aligning closely with the scene cuts).
-For EVERY segment, provide:
-1. startTime and endTime (in seconds).
-2. visualType: strictly one of ["talking_head", "product_closeup", "b_roll_action", "text_graphic"].
-3. cameraMovement: strictly one of ["static", "zoom_in", "pan", "handheld_dynamic"].
-4. onScreenText: exact visual text, stickers, or subtitles visible on screen (or empty string if none).
-5. spokenTranscript: exact spoken dialogue during this segment (or empty string if non-verbal).
-6. wpm: estimated words per minute spoken in this window (0 if silent).
-7. vocalEnergy: strictly one of ["low", "conversational", "high_hype"].
-8. hookAnatomy (for segments covering 0:00 to 0:03):
-   - visualStimulus: description of the visual hook action
-   - verbalHookPattern: strictly one of ["curiosity_gap", "direct_statement", "pattern_interrupt", "question", "urgency_fomo", "relatable_struggle"]
-   - description: explanation of why this hook works or fails.
-9. summary: brief 1-sentence note of what occurs.
-
-Cover the entire video from 0.0s to ${pacing.durationSec}s without gaps.`;
-
-    console.log(`[MultimodalAnalyzer] Calling ${modelName} for structured multimodal deconstruction...`);
-
-    const response = await ai.models.generateContent({
-      model: modelName,
-      contents: createUserContent([
-        createPartFromUri(uploadedFile.uri, uploadedFile.mimeType || 'video/mp4'),
-        promptText,
-      ]),
-      config: {
-        responseMimeType: 'application/json',
-        responseJsonSchema: {
-          type: Type.ARRAY,
-          description: 'Chronological timeline of video editing segments',
-          items: {
-            type: Type.OBJECT,
-            properties: {
-              startTime: { type: Type.NUMBER },
-              endTime: { type: Type.NUMBER },
-              visualType: {
-                type: Type.STRING,
-                enum: ['talking_head', 'product_closeup', 'b_roll_action', 'text_graphic'],
-              },
-              cameraMovement: {
-                type: Type.STRING,
-                enum: ['static', 'zoom_in', 'pan', 'handheld_dynamic'],
-              },
-              onScreenText: { type: Type.STRING },
-              spokenTranscript: { type: Type.STRING },
-              wpm: { type: Type.NUMBER },
-              vocalEnergy: {
-                type: Type.STRING,
-                enum: ['low', 'conversational', 'high_hype'],
-              },
-              hookAnatomy: {
-                type: Type.OBJECT,
-                properties: {
-                  visualStimulus: { type: Type.STRING },
-                  verbalHookPattern: {
-                    type: Type.STRING,
-                    enum: [
-                      'curiosity_gap',
-                      'direct_statement',
-                      'pattern_interrupt',
-                      'question',
-                      'urgency_fomo',
-                      'relatable_struggle',
-                    ],
-                  },
-                  description: { type: Type.STRING },
-                },
-                required: ['visualStimulus', 'verbalHookPattern', 'description'],
-              },
-              summary: { type: Type.STRING },
-            },
-            required: [
-              'startTime',
-              'endTime',
-              'visualType',
-              'cameraMovement',
-              'onScreenText',
-              'spokenTranscript',
-              'wpm',
-              'vocalEnergy',
-            ],
-          },
-        },
-      },
-    });
-
-    const rawJson = response.text;
-    if (!rawJson) {
-      throw new Error('Empty response received from Gemini Multimodal Analyzer.');
+    // Merge or refine WPM and speech from Whisper where applicable
+    if (whisperResult.segments.length > 0) {
+      validated.forEach((seg) => {
+        const matchingSpeech = whisperResult.segments.filter(
+          (ws) => ws.start < seg.endTime && ws.end > seg.startTime
+        );
+        if (matchingSpeech.length > 0 && (!seg.spokenTranscript || seg.spokenTranscript.length < 5)) {
+          seg.spokenTranscript = matchingSpeech.map((m) => m.text).join(' ');
+          seg.wpm = Math.round(
+            matchingSpeech.reduce((acc, m) => acc + m.wpm, 0) / matchingSpeech.length
+          );
+        }
+      });
     }
 
-    const parsed = JSON.parse(rawJson);
-    return z.array(MultimodalSegmentSchema).parse(parsed);
-  } finally {
-    if (uploadedFile?.name) {
-      try {
-        await ai.files.delete({ name: uploadedFile.name });
-        console.log(`[MultimodalAnalyzer] Cleaned up temporary Gemini file: ${uploadedFile.name}`);
-      } catch (err: any) {
-        console.warn(`[MultimodalAnalyzer] Could not delete remote file: ${err.message}`);
-      }
+    return validated;
+  } catch (err: any) {
+    if (options.fallbackToMock ?? true) {
+      console.warn(
+        `[MultimodalAnalyzer] Local Ollama call failed (${err.message}). Generating synthetic deconstructed timeline based on FFmpeg pacing & Whisper.`
+      );
+      return generateSyntheticTimeline(pacing, videoPath, whisperResult);
     }
+    throw new Error(`Local Multimodal analysis failed: ${err.message}`);
   }
 }
 
 /**
- * Creates a synthetic timeline mapped directly to the detected cut boundaries
+ * Creates a synthetic timeline mapped directly to the detected cut boundaries and Whisper transcript
  * for offline dry-runs and automated CI tests.
  */
 export function generateSyntheticTimeline(
   pacing: PacingMetrics,
-  videoPath: string
+  videoPath: string,
+  whisperResult?: WhisperTranscriptionResult
 ): MultimodalSegment[] {
   const isOutlier =
     videoPath.toLowerCase().includes('outlier') ||
@@ -204,6 +210,11 @@ export function generateSyntheticTimeline(
     const startTime = boundaries[i];
     const endTime = boundaries[i + 1];
     const isHook = startTime < 3.0;
+
+    // Check if Whisper has words in this window
+    const speechInWindow = whisperResult?.segments.find(
+      (ws) => ws.start < endTime && ws.end > startTime
+    );
 
     if (isOutlier) {
       const visualTypes: Array<'talking_head' | 'product_closeup' | 'b_roll_action'> = [
@@ -234,10 +245,12 @@ export function generateSyntheticTimeline(
         onScreenText: isHook
           ? 'WAIT TILL THE FLIP 💥'
           : `KEY STEP #${i + 1} SIZZLE`,
-        spokenTranscript: isHook
-          ? 'Wait until you hear this crunch.'
-          : 'Look at the crisp crust and melted cheddar.',
-        wpm: isHook ? 170 : 155,
+        spokenTranscript:
+          speechInWindow?.text ||
+          (isHook
+            ? 'Wait until you hear this crunch.'
+            : 'Look at the crisp crust and melted cheddar.'),
+        wpm: speechInWindow?.wpm || (isHook ? 170 : 155),
         vocalEnergy: isHook ? 'high_hype' : 'conversational',
         hookAnatomy: isHook
           ? {
@@ -249,7 +262,6 @@ export function generateSyntheticTimeline(
         summary: `Dynamic short-form shot showcasing product engagement.`,
       });
     } else {
-      // Baseline underperforming style: mostly static talking head, low energy
       const visualType =
         startTime > 12 && startTime < 20 ? 'product_closeup' : 'talking_head';
       const cameraMovement = 'static';
@@ -260,10 +272,12 @@ export function generateSyntheticTimeline(
         visualType,
         cameraMovement,
         onScreenText: isHook ? 'WEEKLY PROMOTION' : 'Visit our shop',
-        spokenTranscript: isHook
-          ? 'Hey guys, check out our new promo discount this week.'
-          : 'We have 15 percent off all orders downtown.',
-        wpm: 105,
+        spokenTranscript:
+          speechInWindow?.text ||
+          (isHook
+            ? 'Hey guys, check out our new promo discount this week.'
+            : 'We have 15 percent off all orders downtown.'),
+        wpm: speechInWindow?.wpm || 105,
         vocalEnergy: 'low',
         hookAnatomy: isHook
           ? {
